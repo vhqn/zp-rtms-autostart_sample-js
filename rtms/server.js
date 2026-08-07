@@ -264,16 +264,17 @@ function sendWebSocketJson(callId, socketName, ws, message) {
   const serializedMessage = JSON.stringify(message);
   ws.send(serializedMessage);
 
-  if (LOG_WEBSOCKET_EVENTS) {
-    logWebSocketMessageWithDirection(
-      callId,
-      socketName,
-      Buffer.from(serializedMessage),
-      message,
-      false,
-      'sent'
-    );
-  }
+  // Removed verbose "sent" logging - only keep [TEST] logs
+  // if (LOG_WEBSOCKET_EVENTS) {
+  //   logWebSocketMessageWithDirection(
+  //     callId,
+  //     socketName,
+  //     Buffer.from(serializedMessage),
+  //     message,
+  //     false,
+  //     'sent'
+  //   );
+  // }
 }
 
 function getCloseReasonSize(reason) {
@@ -381,11 +382,13 @@ function connectToSignalingWebSocket(callId, rtmsStreamId, serverUrl, callData) 
     callData.signalingMessageCount++;
     if (message.msg_type === 12) {
       callData.signalingHeartbeatCount++;
-      if (callData.signalingHeartbeatCount === 1 || callData.signalingHeartbeatCount % 100 === 0) {
-        logWebSocketMessage(callId, 'Signaling', data, message, isBinary);
-      }
+      // Removed verbose "received" logging
+      // if (callData.signalingHeartbeatCount === 1 || callData.signalingHeartbeatCount % 100 === 0) {
+      //   logWebSocketMessage(callId, 'Signaling', data, message, isBinary);
+      // }
     } else {
-      logWebSocketMessage(callId, 'Signaling', data, message, isBinary);
+      // Removed verbose "received" logging
+      // logWebSocketMessage(callId, 'Signaling', data, message, isBinary);
     }
 
     try {
@@ -483,7 +486,7 @@ function connectToMediaWebSocket(mediaUrl, callId, rtmsStreamId, signalingWs, ca
         payload_encryption: false,
         media_params: {
           audio: {
-            content_type: 2,
+            content_type: 1,  // Changed from 2 (PCM_MIX) to 1 (PCM_PER_CHANNEL) to try receiving audio
             sample_rate: 1,
             channel: 1,
             codec: 1,
@@ -520,11 +523,13 @@ function connectToMediaWebSocket(mediaUrl, callId, rtmsStreamId, signalingWs, ca
     callData.mediaMessageCount++;
     if (message.msg_type === 12) {
       callData.mediaHeartbeatCount++;
-      if (callData.mediaHeartbeatCount === 1 || callData.mediaHeartbeatCount % 100 === 0) {
-        logWebSocketMessage(callId, 'Media', data, message, isBinary);
-      }
+      // Removed verbose "received" logging
+      // if (callData.mediaHeartbeatCount === 1 || callData.mediaHeartbeatCount % 100 === 0) {
+      //   logWebSocketMessage(callId, 'Media', data, message, isBinary);
+      // }
     } else if (message.msg_type !== 14) {
-      logWebSocketMessage(callId, 'Media', data, message, isBinary);
+      // Removed verbose "received" logging
+      // logWebSocketMessage(callId, 'Media', data, message, isBinary);
     }
 
     try {
@@ -596,7 +601,7 @@ function connectToMediaWebSocket(mediaUrl, callId, rtmsStreamId, signalingWs, ca
         logWebSocketEvent(
           callId,
           'Media',
-          `transcript #${callData.transcriptCount} received (content=${message.content.data}).`,
+          `transcript received #${callData.transcriptCount} (${message.content.data}).`,
           {
             kind: 'transcript',
             count: callData.transcriptCount,
