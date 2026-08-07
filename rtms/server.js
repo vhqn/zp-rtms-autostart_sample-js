@@ -482,7 +482,7 @@ function connectToMediaWebSocket(mediaUrl, callId, rtmsStreamId, signalingWs, ca
         call_id: callId,
         rtms_stream_id: rtmsStreamId,
         signature: generateSignature(callId, rtmsStreamId),
-        media_type: 9,  // audio+transcript
+        media_type: 32,  // audio+transcript
         payload_encryption: false,
         media_params: {
           audio: {
