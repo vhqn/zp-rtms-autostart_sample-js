@@ -482,12 +482,12 @@ function connectToMediaWebSocket(mediaUrl, callId, rtmsStreamId, signalingWs, ca
         call_id: callId,
         rtms_stream_id: rtmsStreamId,
         signature: generateSignature(callId, rtmsStreamId),
-        media_type: 1,  // Changed from 32 (audio+transcript) to 1 (audio only) - testing if transcript blocks audio
+        media_type: 9,  // audio+transcript
         payload_encryption: false,
         media_params: {
           audio: {
-            content_type: 2,  // PCM_MIX - mixed audio from all participants
-            sample_rate: 2,   // 16kHz
+            content_type: 2,
+            sample_rate: 1,
             channel: 1,
             codec: 1,
             data_opt: 1,
