@@ -486,8 +486,8 @@ function connectToMediaWebSocket(mediaUrl, callId, rtmsStreamId, signalingWs, ca
         payload_encryption: false,
         media_params: {
           audio: {
-            content_type: 1,  // Changed from 2 (PCM_MIX) to 1 (PCM_PER_CHANNEL) to try receiving audio
-            sample_rate: 1,
+            content_type: 2,  // PCM_MIX - mixed audio from all participants
+            sample_rate: 2,   // Changed from 1 (8kHz) to 2 (16kHz) - trying higher quality
             channel: 1,
             codec: 1,
             data_opt: 1,
