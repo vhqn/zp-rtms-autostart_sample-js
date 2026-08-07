@@ -1,0 +1,4 @@
+interface:
+  display_name: "GitLab OpenAPI Automation"
+  short_description: "Automate GitLab MRs and repository reads"
+  default_prompt: "Use $gitlab-openapi-automation to perform a safe GitLab MR or repository operation."
