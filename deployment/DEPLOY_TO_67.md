@@ -46,7 +46,7 @@ ssh -t 10.203.64.67 \
 # 查最近一次录音的收尾、WAV 生成及错误
 ssh -t 10.203.64.67 \
   'sudo DOCKER_API_VERSION=1.43 docker logs --tail=500 zp-rtms-server-alex 2>&1 | \
-   grep -E "Finalized channel|Interleaved|Recording saved|Failed|ffmpeg"'
+   grep -E "Phone RTMS .*stop_reason|Finalized channel|Interleaved|Recording saved|Failed|ffmpeg"'
 
 # backend webhook/OAuth 日志
 ssh -t 10.203.64.67 \

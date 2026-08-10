@@ -691,6 +691,11 @@ async function handleRTMSStopped(payload, event) {
     return;
   }
 
+  const stopReason = Number.isInteger(payload.stop_reason)
+    ? payload.stop_reason
+    : 'not_provided';
+  console.log(`[${callId}] Phone RTMS ${event} received (stop_reason=${stopReason}).`);
+
   await cleanupCall(callId);
 }
 
