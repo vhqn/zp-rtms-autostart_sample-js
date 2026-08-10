@@ -65,6 +65,21 @@ export async function convertRawToWav(inputFile, outputFile, options = {}) {
       outputFile
     ], { maxBuffer: 2 * 1024 * 1024 });
   } catch (error) {
+    // Keep recording finalization working even when an older runtime image
+    // does not contain ffmpeg. The input is already signed 16-bit little-
+    // endian PCM, so adding a WAV header is sufficient for this conversion.
+    if (error.code === 'ENOENT') {
+      const pcm = fs.readFileSync(inputFile);
+      if (pcm.length % (channels * 2) !== 0) {
+        throw new Error(`Raw PCM size is not aligned to ${channels} channel(s): ${pcm.length} bytes`);
+      }
+      fs.writeFileSync(outputFile, Buffer.concat([
+        buildWavHeader(pcm.length, channels),
+        pcm
+      ]));
+      console.warn(`ffmpeg was not found; wrote WAV header directly: ${outputFile}`);
+      return;
+    }
     throw new Error(`FFmpeg conversion failed: ${error.message}`);
   }
 }

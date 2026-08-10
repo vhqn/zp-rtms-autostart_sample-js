@@ -7,6 +7,7 @@
 | 文件 | 用途 |
 |------|------|
 | [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) | 📖 完整的部署指南（手动步骤） |
+| [DEPLOY_TO_67.md](DEPLOY_TO_67.md) | 🖥️ 10.203.64.67（“67 机器”）RTMS 服务部署与运维手册 |
 | [deploy.sh](deploy.sh) | 🚀 自动化部署脚本 |
 | [verify.sh](verify.sh) | ✅ 部署验证脚本 |
 | [nginx-rtms-proxy.conf](nginx-rtms-proxy.conf) | ⚙️ nginx 代理配置模板 |
