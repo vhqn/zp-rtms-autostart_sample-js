@@ -24,6 +24,11 @@ dotenv.config({ path: join(__dirname, '../.env') });
 const PORT = process.env.RTMS_PORT || 8080;
 const CLIENT_ID = process.env.ZOOM_APP_CLIENT_ID;
 const CLIENT_SECRET = process.env.ZOOM_APP_CLIENT_SECRET;
+const PHONE_RTMS_EVENT_ALIASES = new Map([
+  ['phone.call_rtms_started', 'phone.rtms_started'],
+  ['phone.call_rtms_stopped', 'phone.rtms_stopped'],
+  ['phone.call_rtms_interrupted', 'phone.rtms_interrupted']
+]);
 const PHONE_RTMS_EVENTS = new Set([
   'phone.rtms_started',
   'phone.rtms_stopped',
@@ -61,6 +66,10 @@ function normalizeIdentifier(value) {
   return typeof candidate === 'string' && SAFE_IDENTIFIER_PATTERN.test(candidate)
     ? candidate
     : null;
+}
+
+function normalizePhoneRtmsEvent(event) {
+  return PHONE_RTMS_EVENT_ALIASES.get(event) || event;
 }
 
 function getServerUrl(serverUrls) {
@@ -750,13 +759,14 @@ app.post('/', (req, res) => {
     return res.status(400).json({ error: 'Invalid webhook event' });
   }
 
-  if (event === 'phone.rtms_started') {
+  const normalizedEvent = normalizePhoneRtmsEvent(event);
+  if (normalizedEvent === 'phone.rtms_started') {
     handleRTMSStarted(payload);
-  } else if (event === 'phone.rtms_stopped' || event === 'phone.rtms_interrupted') {
-    void handleRTMSStopped(payload, event).catch((error) => {
-      console.error(`[${event}] Cleanup failed:`, error.message);
+  } else if (normalizedEvent === 'phone.rtms_stopped' || normalizedEvent === 'phone.rtms_interrupted') {
+    void handleRTMSStopped(payload, normalizedEvent).catch((error) => {
+      console.error(`[${normalizedEvent}] Cleanup failed:`, error.message);
     });
-  } else if (!PHONE_RTMS_EVENTS.has(event)) {
+  } else if (!PHONE_RTMS_EVENTS.has(normalizedEvent)) {
     return res.status(200).json({ received: true });
   }
 

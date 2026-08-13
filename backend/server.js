@@ -391,6 +391,11 @@ function normalizeRemoteDebugEvent(event) {
 // Store recent webhook event signatures to prevent duplicates
 const recentWebhooks = new Map();
 const WEBHOOK_DEDUP_WINDOW_MS = 5000; // 5 seconds
+const PHONE_RTMS_EVENT_ALIASES = new Map([
+  ['phone.call_rtms_started', 'phone.rtms_started'],
+  ['phone.call_rtms_stopped', 'phone.rtms_stopped'],
+  ['phone.call_rtms_interrupted', 'phone.rtms_interrupted']
+]);
 const PHONE_RTMS_EVENTS = new Set([
   'phone.rtms_started',
   'phone.rtms_stopped',
@@ -402,6 +407,10 @@ const SAFE_IDENTIFIER_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 function isSafeIdentifier(value) {
   const candidate = Number.isInteger(value) ? String(value) : value;
   return typeof candidate === 'string' && SAFE_IDENTIFIER_PATTERN.test(candidate);
+}
+
+function normalizePhoneRtmsEvent(event) {
+  return PHONE_RTMS_EVENT_ALIASES.get(event) || event;
 }
 
 function getZoomAccessToken(req) {
@@ -479,7 +488,8 @@ app.post('/api/webhooks/zoom', async (req, res) => {
   }
 
   // Forward Phone RTMS events to the RTMS media service.
-  if (PHONE_RTMS_EVENTS.has(event)) {
+  const normalizedEvent = normalizePhoneRtmsEvent(event);
+  if (PHONE_RTMS_EVENTS.has(normalizedEvent)) {
     if (!payload || typeof payload !== 'object' || Array.isArray(payload) || !isSafeIdentifier(payload.call_id)) {
       return res.status(400).json({ error: 'Invalid Phone RTMS payload' });
     }
@@ -488,7 +498,7 @@ app.post('/api/webhooks/zoom', async (req, res) => {
     const eventTimestamp = req.body.event_ts === undefined
       ? ''
       : String(req.body.event_ts).slice(0, 64);
-    const webhookSignature = `${event}:${payload.call_id}:${eventTimestamp}`;
+    const webhookSignature = `${normalizedEvent}:${payload.call_id}:${eventTimestamp}`;
 
     // Check if we've recently processed this exact webhook
     if (recentWebhooks.has(webhookSignature)) {
@@ -505,8 +515,8 @@ app.post('/api/webhooks/zoom', async (req, res) => {
     }, WEBHOOK_DEDUP_WINDOW_MS);
 
     const rtmsServerUrl = process.env.RTMS_SERVER_URL || 'http://localhost:8080';
-    console.log(`Forwarding ${event} to RTMS server at ${rtmsServerUrl}`);
-    const forwardedBody = { event, payload };
+    console.log(`Forwarding ${event} as ${normalizedEvent} to RTMS server at ${rtmsServerUrl}`);
+    const forwardedBody = { event: normalizedEvent, payload };
     if (req.body.event_ts !== undefined) {
       forwardedBody.event_ts = req.body.event_ts;
     }
@@ -514,7 +524,7 @@ app.post('/api/webhooks/zoom', async (req, res) => {
     axios.post(rtmsServerUrl, forwardedBody, {
       headers: { 'Content-Type': 'application/json' }
     }).then(() => {
-      console.log(`Successfully forwarded ${event} to RTMS server`);
+      console.log(`Successfully forwarded ${event} as ${normalizedEvent} to RTMS server`);
     }).catch((error) => {
       console.error(`Failed to forward ${event} to RTMS server:`, error.message);
     });
