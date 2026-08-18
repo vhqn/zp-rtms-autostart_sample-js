@@ -491,7 +491,7 @@ function connectToMediaWebSocket(mediaUrl, callId, rtmsStreamId, signalingWs, ca
         call_id: callId,
         rtms_stream_id: rtmsStreamId,
         signature: generateSignature(callId, rtmsStreamId),
-        media_type: 32,  // audio+transcript
+        media_type: 32,  // ALL (Phone gateway rejects 9 = AUDIO|TRANSCRIPT)
         payload_encryption: false,
         media_params: {
           audio: {
@@ -501,8 +501,12 @@ function connectToMediaWebSocket(mediaUrl, callId, rtmsStreamId, signalingWs, ca
             codec: 1,
             data_opt: 1,
             send_rate: 20
+          },
+          transcript: {
+            content_type: 5,
+            src_language: 9,
+            enable_lid: true
           }
-          // Removed transcript config to test audio-only mode
         }
       };
 
