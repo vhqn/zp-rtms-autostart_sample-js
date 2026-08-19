@@ -68,13 +68,14 @@ services:
       # Docker service name overrides (differ from .env localhost values)
       - PORT=8080
       - BACKEND_URL=http://backend:3001
+      - RTMS_DATA_DIR=/app/data
     volumes:
       # Mount source code for hot reload
       - ./rtms:/app:delegated
       # Prevent overwriting node_modules
       - rtms-node-modules:/app/node_modules
-      # Persist audio and transcript data
-      - ./rtms/data:/app/data:delegated
+      # Persist audio and transcript data (override with RTMS_DATA_HOST_DIR)
+      - ${RTMS_DATA_HOST_DIR:-./rtms/data}:/app/data:delegated
       # Mount shared .env file
       - ./.env:/app/../.env:ro
     networks:

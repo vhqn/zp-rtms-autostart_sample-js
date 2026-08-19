@@ -1,30 +1,20 @@
-# Production deployment with nginx proxy
-# 使用方法: docker compose -f docker-compose.prod.yml up -d
 version: '3.8'
 
 services:
-  # Backend API server - 映射到 9002 供 nginx 代理
   backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: zp-rtms-backend-alex
+    image: zp-rtms-autostart_sample-js-backend:latest
+    container_name: zp-rtms-backend-${INSTANCE_PORT}
     ports:
-      # 映射到 9002（避免与现有的 9001 冲突）
-      - "127.0.0.1:9002:3001"
+      - "127.0.0.1:${BACKEND_HOST_PORT}:3001"
     env_file:
       - ./.env
     environment:
-      # Docker service name overrides
       - FRONTEND_INTERNAL_URL=http://frontend:3000
       - RTMS_SERVER_URL=http://rtms:8080
       - NODE_ENV=production
     volumes:
-      # Mount source code for hot reload
       - ./backend:/app:delegated
-      # Prevent overwriting node_modules
       - backend-node-modules:/app/node_modules
-      # Mount shared .env file
       - ./.env:/app/../.env:ro
     networks:
       - zoom-phone-network
@@ -33,12 +23,9 @@ services:
       - rtms
     restart: unless-stopped
 
-  # Frontend React dev server (内部访问)
   frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: zp-rtms-frontend-alex
+    image: zp-rtms-autostart_sample-js-frontend:latest
+    container_name: zp-rtms-frontend-${INSTANCE_PORT}
     env_file:
       - ./.env
     environment:
@@ -56,12 +43,9 @@ services:
     tty: true
     restart: unless-stopped
 
-  # RTMS server (内部访问，处理 WebSocket)
   rtms:
-    build:
-      context: ./rtms
-      dockerfile: Dockerfile
-    container_name: zp-rtms-server-alex
+    image: zp-rtms-autostart_sample-js-rtms:latest
+    container_name: zp-rtms-server-${INSTANCE_PORT}
     platform: linux/amd64
     env_file:
       - ./.env
@@ -72,7 +56,6 @@ services:
     volumes:
       - ./rtms:/app:delegated
       - rtms-node-modules:/app/node_modules
-      # Shared host data dir used by all RTMS instances
       - /home/rtms:/app/data:delegated
       - ./.env:/app/../.env:ro
     networks:

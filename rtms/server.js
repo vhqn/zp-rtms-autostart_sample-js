@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { mkdirSync, existsSync, appendFileSync } from 'fs';
+import { appendFileSync } from 'fs';
 import dotenv from 'dotenv';
 import express from 'express';
 import crypto from 'crypto';
@@ -10,10 +10,11 @@ import {
   convertRawToWav,
   closeRawStream,
   closeAllAudioStreams,
-  makeSessionTimestamp,
   getChannelRawPath,
   getChannelWavPath,
-  finalizeInterleavedWav
+  ensureDir,
+  makeWorldReadable,
+  removeSessionRawDir
 } from './audioHelper.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -46,15 +47,15 @@ if (!CLIENT_ID || !CLIENT_SECRET) {
   console.warn('[WARN] ZOOM_APP_CLIENT_ID and ZOOM_APP_CLIENT_SECRET must be configured for RTMS handshakes.');
 }
 
-const dataDir = join(__dirname, 'data');
+const dataDir = process.env.RTMS_DATA_DIR || join(__dirname, 'data');
 const audioDir = join(dataDir, 'audio');
 const transcriptsDir = join(dataDir, 'transcripts');
 
-[dataDir, audioDir, transcriptsDir].forEach((dir) => {
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-});
+try {
+  [dataDir, audioDir, transcriptsDir].forEach(ensureDir);
+} catch (error) {
+  console.warn(`[WARN] Data directories not ready yet (${error.message}); will create on write.`);
+}
 
 // Store active Phone calls keyed by the Phone call ID.
 const activeCalls = new Map();
@@ -303,15 +304,19 @@ function parseWebSocketMessage(data, callId) {
   }
 }
 
-function saveTranscript(callId, data) {
+function saveTranscript(callId, streamId, data) {
   const safeCallId = normalizeIdentifier(callId);
-  if (!safeCallId) {
+  const safeStreamId = normalizeIdentifier(streamId);
+  if (!safeCallId || !safeStreamId) {
     return;
   }
 
   const timestamp = new Date().toISOString();
-  const filePath = join(transcriptsDir, `${safeCallId}.txt`);
+  const callTranscriptDir = join(transcriptsDir, safeCallId);
+  const filePath = join(callTranscriptDir, `${safeStreamId}.txt`);
+  ensureDir(callTranscriptDir);
   appendFileSync(filePath, `[${timestamp}] ${JSON.stringify(data)}\n`);
+  makeWorldReadable(filePath);
 }
 
 // Generate HMAC-SHA256(client_id + "," + call_id + "," + rtms_stream_id, secret).
@@ -411,20 +416,7 @@ function connectToSignalingWebSocket(callId, rtmsStreamId, serverUrl, callData) 
         }
 
         logWebSocketEvent(callId, 'Signaling', 'handshake accepted.');
-
-        const mediaUrl = getServerUrl(message.media_server?.server_urls?.audio)
-          || getServerUrl(message.media_server?.server_urls?.all);
-        if (!mediaUrl) {
-          console.error(`[${callId}] RTMS signaling response did not include a media URL.`);
-          return;
-        }
-
-        logWebSocketEvent(
-          callId,
-          'Signaling',
-          `media endpoint received at ${describeWebSocketEndpoint(mediaUrl)}.`
-        );
-        connectToMediaWebSocket(mediaUrl, callId, rtmsStreamId, ws, callData);
+        connectMediaStreams(message.media_server?.server_urls, callId, rtmsStreamId, ws, callData);
       } else if (message.msg_type === 6) {
         const event = message.event;
         const eventType = event?.event_type;
@@ -467,59 +459,138 @@ function connectToSignalingWebSocket(callId, rtmsStreamId, serverUrl, callData) 
   });
 }
 
-function connectToMediaWebSocket(mediaUrl, callId, rtmsStreamId, signalingWs, callData) {
-  const normalizedUrl = normalizeWebSocketUrl(mediaUrl);
+const AUDIO_MEDIA_PARAMS = {
+  audio: {
+    content_type: 2,
+    sample_rate: 1,
+    channel: 1,
+    codec: 1,
+    data_opt: 1,
+    send_rate: 20
+  }
+};
+
+const TRANSCRIPT_MEDIA_PARAMS = {
+  transcript: {
+    content_type: 5,
+    src_language: 9,
+    enable_lid: true
+  }
+};
+
+function pickMediaUrl(serverUrls, preferredKey) {
+  if (serverUrls && typeof serverUrls === 'object' && !Array.isArray(serverUrls)) {
+    return getServerUrl(serverUrls[preferredKey]) || getServerUrl(serverUrls.all);
+  }
+
+  return getServerUrl(serverUrls);
+}
+
+function maybeSendClientReadyAck(callId, rtmsStreamId, signalingWs, callData) {
+  if (callData.clientReadyAckSent || callData.pendingMediaHandshakes > 0) {
+    return;
+  }
+  if (callData.successfulMediaHandshakes <= 0) {
+    console.error(`[${callId}] All RTMS media handshakes failed.`);
+    return;
+  }
+  if (!signalingWs || signalingWs.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
+  callData.clientReadyAckSent = true;
+  sendWebSocketJson(callId, 'Signaling', signalingWs, {
+    msg_type: 7,
+    rtms_stream_id: rtmsStreamId
+  });
+  logWebSocketEvent(callId, 'Signaling', 'media handshake acknowledgement sent.');
+}
+
+function connectMediaStreams(serverUrls, callId, rtmsStreamId, signalingWs, callData) {
+  const streams = [
+    {
+      kind: 'audio',
+      socketName: 'Audio',
+      wsField: 'audioWs',
+      mediaType: 1,
+      mediaParams: AUDIO_MEDIA_PARAMS,
+      url: pickMediaUrl(serverUrls, 'audio')
+    },
+    {
+      kind: 'transcript',
+      socketName: 'Transcript',
+      wsField: 'transcriptWs',
+      mediaType: 8,
+      mediaParams: TRANSCRIPT_MEDIA_PARAMS,
+      url: pickMediaUrl(serverUrls, 'transcript')
+    }
+  ];
+
+  const started = streams.filter((stream) => {
+    if (stream.url) {
+      return true;
+    }
+    console.error(`[${callId}] RTMS signaling response did not include a ${stream.kind} URL.`);
+    return false;
+  });
+
+  if (started.length === 0) {
+    console.error(`[${callId}] RTMS signaling response did not include a media URL.`);
+    return;
+  }
+
+  callData.pendingMediaHandshakes = started.length;
+  callData.successfulMediaHandshakes = 0;
+  callData.clientReadyAckSent = false;
+
+  for (const stream of started) {
+    connectToMediaWebSocket(stream, callId, rtmsStreamId, signalingWs, callData);
+  }
+}
+
+function connectToMediaWebSocket(stream, callId, rtmsStreamId, signalingWs, callData) {
+  const normalizedUrl = normalizeWebSocketUrl(stream.url);
   if (!normalizedUrl) {
-    console.error(`[${callId}] RTMS media URL is not a valid wss:// URL.`);
+    console.error(`[${callId}] RTMS ${stream.kind} URL is not a valid wss:// URL.`);
+    callData.pendingMediaHandshakes = Math.max(0, callData.pendingMediaHandshakes - 1);
+    maybeSendClientReadyAck(callId, rtmsStreamId, signalingWs, callData);
     return;
   }
 
   logWebSocketEvent(
     callId,
-    'Media',
+    stream.socketName,
     `connecting to ${describeWebSocketEndpoint(normalizedUrl)}.`
   );
   const ws = createWebSocket(normalizedUrl);
-  callData.mediaWs = ws;
+  callData[stream.wsField] = ws;
 
   ws.on('open', () => {
     try {
-      logWebSocketEvent(callId, 'Media', 'opened; sending handshake.');
+      logWebSocketEvent(callId, stream.socketName, 'opened; sending handshake.');
       const handshake = {
         msg_type: 3,
         protocol_version: 1,
         call_id: callId,
         rtms_stream_id: rtmsStreamId,
         signature: generateSignature(callId, rtmsStreamId),
-        media_type: 32,  // ALL (Phone gateway rejects 9 = AUDIO|TRANSCRIPT)
+        media_type: stream.mediaType,
         payload_encryption: false,
-        media_params: {
-          audio: {
-            content_type: 2,
-            sample_rate: 1,
-            channel: 1,
-            codec: 1,
-            data_opt: 1,
-            send_rate: 20
-          },
-          transcript: {
-            content_type: 5,
-            src_language: 9,
-            enable_lid: true
-          }
-        }
+        media_params: stream.mediaParams
       };
 
-      // Test log: print media handshake request
-      console.log(`[${callId}] [TEST] Media handshake request:`, JSON.stringify(handshake, null, 2));
+      console.log(
+        `[${callId}] [TEST] ${stream.socketName} handshake request:`,
+        JSON.stringify(handshake, null, 2)
+      );
 
-      sendWebSocketJson(callId, 'Media', ws, handshake);
+      sendWebSocketJson(callId, stream.socketName, ws, handshake);
     } catch (error) {
-      console.error(`[${callId}] Failed to send media handshake:`, error.message);
+      console.error(`[${callId}] Failed to send ${stream.kind} handshake:`, error.message);
     }
   });
 
-  ws.on('message', (data, isBinary) => {
+  ws.on('message', (data, _isBinary) => {
     if (callData.cleaningUp || activeCalls.get(callId) !== callData) {
       return;
     }
@@ -532,41 +603,32 @@ function connectToMediaWebSocket(mediaUrl, callId, rtmsStreamId, signalingWs, ca
     callData.mediaMessageCount++;
     if (message.msg_type === 12) {
       callData.mediaHeartbeatCount++;
-      // Removed verbose "received" logging
-      // if (callData.mediaHeartbeatCount === 1 || callData.mediaHeartbeatCount % 100 === 0) {
-      //   logWebSocketMessage(callId, 'Media', data, message, isBinary);
-      // }
-    } else if (message.msg_type !== 14) {
-      // Removed verbose "received" logging
-      // logWebSocketMessage(callId, 'Media', data, message, isBinary);
     }
 
     try {
       if (message.msg_type === 4) {
-        // Test log: print media handshake response
-        console.log(`[${callId}] [TEST] Media handshake response:`, JSON.stringify(message, null, 2));
+        console.log(
+          `[${callId}] [TEST] ${stream.socketName} handshake response:`,
+          JSON.stringify(message, null, 2)
+        );
 
+        callData.pendingMediaHandshakes = Math.max(0, callData.pendingMediaHandshakes - 1);
         if (message.status_code !== 0) {
-          console.error(`[${callId}] RTMS media handshake failed.`);
+          console.error(`[${callId}] RTMS ${stream.kind} handshake failed.`);
+          maybeSendClientReadyAck(callId, rtmsStreamId, signalingWs, callData);
           return;
         }
 
-        logWebSocketEvent(callId, 'Media', 'handshake accepted.');
-
-        if (signalingWs.readyState === WebSocket.OPEN) {
-          sendWebSocketJson(callId, 'Signaling', signalingWs, {
-            msg_type: 7,
-            rtms_stream_id: rtmsStreamId
-          });
-          logWebSocketEvent(callId, 'Signaling', 'media handshake acknowledgement sent.');
-        }
+        callData.successfulMediaHandshakes++;
+        logWebSocketEvent(callId, stream.socketName, 'handshake accepted.');
+        maybeSendClientReadyAck(callId, rtmsStreamId, signalingWs, callData);
       } else if (message.msg_type === 12 && ws.readyState === WebSocket.OPEN) {
-        sendWebSocketJson(callId, 'Media', ws, {
+        sendWebSocketJson(callId, stream.socketName, ws, {
           msg_type: 13,
           timestamp: message.timestamp
         });
         if (callData.mediaHeartbeatCount === 1 || callData.mediaHeartbeatCount % 100 === 0) {
-          logWebSocketEvent(callId, 'Media', 'heartbeat acknowledged.');
+          logWebSocketEvent(callId, stream.socketName, 'heartbeat acknowledged.');
         }
       } else if (message.msg_type === 14) {
         const content = message.content;
@@ -594,7 +656,7 @@ function connectToMediaWebSocket(mediaUrl, callId, rtmsStreamId, signalingWs, ca
         if (callData.audioChunkCount === 1 || callData.audioChunkCount % 100 === 0) {
           logWebSocketEvent(
             callId,
-            'Media',
+            stream.socketName,
             `audio chunk #${callData.audioChunkCount} received (channel=${channelId}, bytes=${audioBuffer.length}).`,
             {
               kind: 'audio',
@@ -609,7 +671,7 @@ function connectToMediaWebSocket(mediaUrl, callId, rtmsStreamId, signalingWs, ca
         callData.transcriptCount++;
         logWebSocketEvent(
           callId,
-          'Media',
+          stream.socketName,
           `transcript received #${callData.transcriptCount} (${message.content.data}).`,
           {
             kind: 'transcript',
@@ -618,21 +680,21 @@ function connectToMediaWebSocket(mediaUrl, callId, rtmsStreamId, signalingWs, ca
             transport_bytes: getWebSocketPayloadSize(data)
           }
         );
-        saveTranscript(callId, message.content.data);
+        saveTranscript(callId, callData.rtmsStreamId, message.content.data);
       }
     } catch (error) {
-      console.error(`[${callId}] Error handling media message:`, error.message);
+      console.error(`[${callId}] Error handling ${stream.kind} message:`, error.message);
     }
   });
 
   ws.on('error', (error) => {
-    logWebSocketError(callId, 'Media', error);
+    logWebSocketError(callId, stream.socketName, error);
   });
 
   ws.on('close', (code, reason) => {
     logWebSocketEvent(
       callId,
-      'Media',
+      stream.socketName,
       `closed (code=${code}, reason_bytes=${getCloseReasonSize(reason)}).`
     );
   });
@@ -662,7 +724,9 @@ function handleRTMSStarted(payload) {
     return;
   }
 
-  const sessionDir = join(audioDir, `${makeSessionTimestamp()}_${callId}`);
+  const sessionDir = join(audioDir, callId, rtmsStreamId);
+  ensureDir(sessionDir);
+  ensureDir(join(sessionDir, 'raw'));
   const callData = {
     callId,
     rtmsStreamId,
@@ -677,12 +741,16 @@ function handleRTMSStarted(payload) {
     mediaHeartbeatCount: 0,
     startedAt: new Date(),
     signalingWs: null,
-    mediaWs: null,
+    audioWs: null,
+    transcriptWs: null,
+    pendingMediaHandshakes: 0,
+    successfulMediaHandshakes: 0,
+    clientReadyAckSent: false,
     cleaningUp: false
   };
 
   activeCalls.set(callId, callData);
-  console.log(`[${callId}] Recording session started.`);
+  console.log(`[${callId}] Recording session started (stream=${rtmsStreamId}).`);
 
   try {
     connectToSignalingWebSocket(callId, rtmsStreamId, serverUrl, callData);
@@ -727,9 +795,13 @@ async function cleanupCall(callId) {
       logWebSocketEvent(callId, 'Signaling', 'closing.');
       data.signalingWs.close();
     }
-    if (data.mediaWs) {
-      logWebSocketEvent(callId, 'Media', 'closing.');
-      data.mediaWs.close();
+    if (data.audioWs) {
+      logWebSocketEvent(callId, 'Audio', 'closing.');
+      data.audioWs.close();
+    }
+    if (data.transcriptWs) {
+      logWebSocketEvent(callId, 'Transcript', 'closing.');
+      data.transcriptWs.close();
     }
 
     for (const [channelId, channel] of data.channelPaths) {
@@ -737,12 +809,14 @@ async function cleanupCall(callId) {
     }
 
     try {
-      await finalizeInterleavedWav(data.sessionDir, data.channelPaths);
+      removeSessionRawDir(data.sessionDir);
     } catch (error) {
-      console.error(`[${callId}] Failed to finalize mixed WAV:`, error.message);
+      console.error(`[${callId}] Failed to remove raw directory:`, error.message);
     }
 
-    console.log(`[${callId}] Recording saved with ${data.audioChunkCount} audio chunks.`);
+    console.log(
+      `[${callId}] Recording saved with ${data.audioChunkCount} audio chunks and ${data.transcriptCount} transcripts.`
+    );
   } catch (error) {
     console.error(`[${callId}] RTMS cleanup error:`, error.message);
   } finally {
@@ -806,6 +880,7 @@ app.listen(PORT, () => {
   console.log('='.repeat(50));
   console.log(`Port: ${PORT}`);
   console.log(`Audio directory: ${audioDir}`);
+  console.log(`Transcripts directory: ${transcriptsDir}`);
   console.log('='.repeat(50));
   console.log('Server ready - waiting for Phone RTMS webhooks');
 });

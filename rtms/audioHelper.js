@@ -17,6 +17,31 @@ function normalizeChannelIdentifier(channelId) {
 // Cache of open write streams keyed by file path
 const writeStreams = new Map();
 
+export function ensureDir(dir) {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o755 });
+  let current = path.resolve(dir);
+  const stopAt = new Set(['/', '/app', '/home', '/home/rtms']);
+  while (!stopAt.has(current)) {
+    try {
+      fs.chmodSync(current, 0o755);
+    } catch (_error) {
+      break;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      break;
+    }
+    current = parent;
+  }
+}
+
+export function makeWorldReadable(filePath) {
+  try {
+    fs.chmodSync(filePath, 0o644);
+  } catch (_error) {
+    // Directory permissions are enough for SFTP download if chmod is denied.
+  }
+}
 
 export function makeSessionTimestamp() {
   const now = new Date();
@@ -25,18 +50,20 @@ export function makeSessionTimestamp() {
 }
 
 export function getChannelRawPath(sessionDir, channelId) {
-  return path.join(sessionDir, `channel_${normalizeChannelIdentifier(channelId)}.raw`);
+  return path.join(sessionDir, 'raw', `channel_${normalizeChannelIdentifier(channelId)}.raw`);
 }
 
 export function getChannelWavPath(sessionDir, channelId) {
   return path.join(sessionDir, `channel_${normalizeChannelIdentifier(channelId)}.wav`);
 }
 
+export function removeSessionRawDir(sessionDir) {
+  const rawDir = path.join(sessionDir, 'raw');
+  fs.rmSync(rawDir, { recursive: true, force: true });
+}
+
 export function saveRawAudio(chunk, rawPath) {
-  const dir = path.dirname(rawPath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+  ensureDir(path.dirname(rawPath));
 
   let stream = writeStreams.get(rawPath);
   if (!stream) {
@@ -54,6 +81,8 @@ export async function convertRawToWav(inputFile, outputFile, options = {}) {
   const channels = Number.isInteger(options.channels) && options.channels > 0
     ? options.channels
     : 1;
+
+  ensureDir(path.dirname(outputFile));
 
   try {
     await execFileAsync('ffmpeg', [
@@ -77,11 +106,13 @@ export async function convertRawToWav(inputFile, outputFile, options = {}) {
         buildWavHeader(pcm.length, channels),
         pcm
       ]));
+      makeWorldReadable(outputFile);
       console.warn(`ffmpeg was not found; wrote WAV header directly: ${outputFile}`);
       return;
     }
     throw new Error(`FFmpeg conversion failed: ${error.message}`);
   }
+  makeWorldReadable(outputFile);
 }
 
 export function closeRawStream(rawPath) {
@@ -155,7 +186,9 @@ export async function finalizeInterleavedWav(sessionDir, channelPaths) {
   if (channelPaths.size === 0) return;
 
   const ordered = Array.from(channelPaths.keys());
-  const outPath = path.join(sessionDir, 'mixed.wav');
+  const rawDir = path.join(sessionDir, 'raw');
+  ensureDir(rawDir);
+  const outPath = path.join(rawDir, 'mixed.wav');
 
   let pcm;
   let channels;
